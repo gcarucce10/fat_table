@@ -99,6 +99,27 @@ int main( int argc, char *argv[] )
 			} else {
 				printf("uso: deletar <arquivo>\n");
 			}
+		} else if(!strcmp(cmd,"escrever")) {
+			if (args == 3) {
+				int offset = atoi(arg2);
+				char input[1024];
+
+				printf("conteudo: ");
+				fflush(stdout);
+				if (!fgets(input, sizeof(input), stdin)) {
+					printf("falha na leitura do buffer\n");
+				} else {
+					input[strcspn(input, "\n")] = 0;
+					int r = fat_write(arg1, input, strlen(input), offset);
+					if (r >= 0)
+						printf("escreveu %d bytes\n", r);
+					else
+						printf("erro ao escrever\n");
+				}
+			} else {
+				printf("uso: escrever <arquivo> <offset>\n");
+			}
+
 		} else if(!strcmp(cmd,"ver")) {
 			if(args==2) {
 				if(!cpout(arg1,"/dev/stdout")) {
@@ -214,7 +235,7 @@ int cpout( char *os_path, char *name )
 		offset += result;
 	}
 
-	printf("copia de %d bytes\n",offset);
+	printf("\ncopia de %d bytes\n",offset);
 
 	if(file != stdout)
 		fclose(file);

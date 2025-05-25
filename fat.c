@@ -88,6 +88,8 @@ int fat_format(){
 
 	free(fat);
 
+	mountState = 1;
+
 	// Return 0 if everything went well
 	return 0;
 }
@@ -131,8 +133,8 @@ void fat_debug(){
 // checks if the superblock is valid by comparing the magic number.
 int fat_mount(){
 	// Check if the disk is already mounted
-	if(mountState != 0){
-		printf("Error: disk already mounted\n");
+	if(mountState == 0){
+		printf("Error: disk not mounted\n");
 		return -1;
 	}
 
@@ -183,7 +185,7 @@ int fat_create(char *name){
 	}
 
 	// Find the first free slot in the directory and write the file name there
-	for (int j = 0; j < N_ITEMS; j++){
+	for (int i = 0; i < N_ITEMS; i++){
 		if (!dir[i].used){
 			// Create a new file
 			dir[i].used = 1;
@@ -244,7 +246,7 @@ int fat_delete( char *name){
 
 			ds_write(DIR, (char *)dir);
 
-			PRINTF("File \"%s\" deleted\n", name);
+			printf("File \"%s\" deleted\n", name);
 
 			return 0;
 		}
@@ -286,12 +288,151 @@ int fat_getsize( char *name){
 	return -1;
 }
 
-//Retorna a quantidade de caracteres lidos
+// Reads data from a valid file. Copies length bytes from the file to buff,
+// starting offset bytes from the beginning of the file. Returns the total 
+//bytes read. This value may be less than length if the end of the file is reached.
+// In case of an error, returns -1. 
 int fat_read( char *name, char *buff, int length, int offset){
-	return 0;
+	if (!mountState) return -1;
+    if (length <= 0 || offset < 0) return -1;
+
+	int i;
+    for (i = 0; i < N_ITEMS; i++) {
+        if (dir[i].used && strcmp(dir[i].name, name) == 0)
+            break;
+    }
+    if (i == N_ITEMS) return -1;
+
+	unsigned int filesize = dir[i].length;
+	if (offset >= filesize) return -1; 
+
+	if (offset + length > filesize)
+        length = filesize - offset;
+
+	unsigned int current = dir[i].first;
+    int pos = 0;
+    int read_bytes = 0;
+    int block_offset = offset;
+
+    while (block_offset >= BLOCK_SIZE && current != EOFF) {
+        current = fat[current];
+        block_offset -= BLOCK_SIZE;
+        pos += BLOCK_SIZE;
+    }
+
+    while (read_bytes < length && current != EOFF) {
+        char data[BLOCK_SIZE];
+        ds_read(current, data);
+
+        int to_read = BLOCK_SIZE - block_offset;
+        if (to_read > (length - read_bytes))
+            to_read = length - read_bytes;
+
+        memcpy(buff + read_bytes, data + block_offset, to_read);
+        read_bytes += to_read;
+        block_offset = 0;
+
+        current = fat[current];
+    }
+
+    return read_bytes;
 }
 
-//Retorna a quantidade de caracteres escritos
-int fat_write( char *name, const char *buff, int length, int offset){
-	return 0;
+// Writes data to a file. Copies length bytes from buff to the file, 
+// starting offset bytes from the beginning of the file. Generally, 
+// this operation involves allocating free blocks. Returns the total
+// bytes written. This value can be less than length, for example, if 
+//the disk becomes full. In case of an error, returns -1.
+int fat_write(char *name, const char *buff, int length, int offset) {
+    if (!mountState) return -1;
+    if (length <= 0 || offset < 0) return -1;
+
+    int i;
+    for (i = 0; i < N_ITEMS; i++) {
+        if (dir[i].used && strcmp(dir[i].name, name) == 0) break;
+    }
+    if (i == N_ITEMS) return -1; 
+
+    unsigned int filesize = dir[i].length;
+    unsigned int first = dir[i].first;
+
+    if (first == 0) {
+        int b;
+        for (b = 3; b < sb.number_blocks; b++) {
+            if (fat[b] == FREE) {
+                dir[i].first = b;
+                fat[b] = EOFF;
+                break;
+            }
+        }
+        if (dir[i].first == 0) return -1;
+        first = dir[i].first;
+    }
+
+    unsigned int current = first;
+    unsigned int prev = 0;
+    int pos = 0;
+    while (pos + BLOCK_SIZE <= offset) {
+        if (fat[current] == EOFF) {
+            int novo = -1;
+            for (int b = 3; b < sb.number_blocks; b++) {
+                if (fat[b] == FREE) {
+                    novo = b;
+                    break;
+                }
+            }
+            if (novo == -1) return pos; 
+            fat[current] = novo;
+            fat[novo] = EOFF;
+        }
+        prev = current;
+        current = fat[current];
+        pos += BLOCK_SIZE;
+    }
+
+    int written = 0;
+    int buff_pos = 0;
+    int write_offset = offset - pos;
+
+    while (written < length) {
+        char block_data[BLOCK_SIZE];
+
+        ds_read(current, block_data);
+
+        int to_copy = BLOCK_SIZE - write_offset;
+        if (to_copy > (length - written)) {
+            to_copy = length - written;
+        }
+
+        memcpy(block_data + write_offset, buff + buff_pos, to_copy);
+        ds_write(current, block_data);
+
+        written += to_copy;
+        buff_pos += to_copy;
+        write_offset = 0; 
+
+        if (written < length) {
+            if (fat[current] == EOFF) {
+                int novo = -1;
+                for (int b = 3; b < sb.number_blocks; b++) {
+                    if (fat[b] == FREE) {
+                        novo = b;
+                        break;
+                    }
+                }
+                if (novo == -1) break; 
+                fat[current] = novo;
+                fat[novo] = EOFF;
+            }
+            current = fat[current];
+        }
+    }
+
+    if (offset + written > dir[i].length)
+        dir[i].length = offset + written;
+
+    ds_write(DIR, (char *)dir);
+    ds_write(TABLE, (char *)fat);
+
+    return written;
 }
